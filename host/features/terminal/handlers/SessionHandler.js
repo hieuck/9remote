@@ -14,6 +14,7 @@ import { isCodespaces } from "../codespaceManager.js";
 import { broadcast } from "../../../transport/broadcast.js";
 import { isSensitivePath } from "../../fileExplorer/pathGuard.js";
 import { currentSeq, getGap, clearSession } from "../seqStore.js";
+import { appendChunk, bufferTotal } from "../bufferSlice.js";
 import { globalAiManager } from "../../ai/aiManager.js";
 import { queueSkillInstall } from "../../browserUse/skill.js";
 import { aiHistoryChunk } from "../../ai/aiEventSlice.js";
@@ -179,12 +180,15 @@ function takeBufferTail(chunks, maxLen) {
 
 function attachPtyListeners(ptyProcess, sessionId, sessionData, io, sessions) {
   let saveTimeout = null;
+  // A restored session carries whatever metadata held, so the budget state may be absent —
+  // seed it here or the running total would start as NaN and the trim would never re-arm.
+  if (!Array.isArray(sessionData.buffer)) sessionData.buffer = [];
+  if (typeof sessionData.bufferBytes !== "number") sessionData.bufferBytes = bufferTotal(sessionData.buffer);
 
   ptyProcess.onData((data) => {
-    sessionData.buffer.push(data);
-    // Trim by char length keeping the tail — avoids cutting whole chunks mid-ANSI
-    const size = sessionData.buffer.reduce((s, c) => s + c.length, 0);
-    if (size > MAX_BUFFER) sessionData.buffer = [takeBufferTail(sessionData.buffer, MAX_BUFFER)];
+    [sessionData.buffer, sessionData.bufferBytes] = appendChunk(
+      sessionData.buffer, sessionData.bufferBytes, data, MAX_BUFFER
+    );
     broadcast(io, "output", { sessionId, data: Buffer.from(data, "utf-8") });
     if (PERSISTENCE_MODE === "buffer") {
       if (saveTimeout) clearTimeout(saveTimeout);
@@ -506,7 +510,7 @@ export function setupSessionHandlers(socket, io, sessions, workspaces, sessionWo
 
       const ptyProcess = pty.spawn(shellConfig.path, shellConfig.args, { name: "xterm-256color", cols: 80, rows: 24, cwd: resolvedCwd, env: shellEnv, useConpty: false });
       if (agentId) setSessionAgent(sessionId, agentId);
-      const sessionData = { pty: ptyProcess, name: autoName, autoNamed, createdAt: Date.now(), buffer: [], cwd: resolvedCwd, workspacePath, shellId: shellConfig.id, shellLabel: shellConfig.label, agent: agentId };
+      const sessionData = { pty: ptyProcess, name: autoName, autoNamed, createdAt: Date.now(), buffer: [], bufferBytes: 0, cwd: resolvedCwd, workspacePath, shellId: shellConfig.id, shellLabel: shellConfig.label, agent: agentId };
 
       attachPtyListeners(ptyProcess, sessionId, sessionData, io, sessions);
       sessions.set(sessionId, sessionData);
@@ -581,7 +585,7 @@ export function setupSessionHandlers(socket, io, sessions, workspaces, sessionWo
         session.cwd = cwd;
 
         const saved = loadSessionBuffer(sessionId, PERSISTENCE_MODE);
-        if (saved) session.buffer = [saved];
+        if (saved) { session.buffer = [saved]; session.bufferBytes = saved.length; }
 
         attachPtyListeners(ptyProcess, sessionId, session, io, sessions);
         console.log(`✅ Restored PTY session: ${sessionId}`);

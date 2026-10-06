@@ -7,6 +7,7 @@ import os from "os";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import { DAEMON_VERSION } from "./constants.js";
+import { daemonCacheIsCurrent } from "./daemonCache.js";
 import { NODE_BIN, nodeSpawnEnv, PATHS } from "../../lib/constants.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -91,9 +92,21 @@ function prepareDaemonCopy(sourceScript) {
   const copiedPtyDir = path.join(scriptDir, "node_modules", "node-pty");
 
   const copiedModules = () => DAEMON_LOCAL_MODULES.map((n) => path.join(scriptDir, n));
-  const isPrepared = () => !isDev
-    ? fs.existsSync(copiedScript) && fs.existsSync(copiedPtyDir)
-    : fs.existsSync(copiedScript) && fs.existsSync(copiedPtyDir) && copiedModules().every((p) => fs.existsSync(p));
+  // Freshness, not mere existence: a cache from a previous install can exist and still hold
+  // older daemon code, and DAEMON_VERSION alone would not notice. Re-copying on a mismatch is
+  // cheap and is what makes an upgrade actually reach the running daemon.
+  const isPrepared = () => {
+    if (!fs.existsSync(copiedPtyDir)) return false;
+    if (isDev) {
+      if (copiedModules().some((p) => !fs.existsSync(p))) return false;
+      // Every dev module must match its source, not just exist.
+      const srcDir = path.dirname(sourceScript);
+      if (!daemonCacheIsCurrent(sourceScript, copiedScript)) return false;
+      return DAEMON_LOCAL_MODULES.every((name) =>
+        daemonCacheIsCurrent(path.join(srcDir, name), path.join(scriptDir, name)));
+    }
+    return daemonCacheIsCurrent(sourceScript, copiedScript);
+  };
   if (isPrepared()) {
     return { script: copiedScript, cwd: scriptDir };
   }

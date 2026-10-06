@@ -8,6 +8,28 @@ export function bufferTotal(chunks) {
   return chunks.reduce((sum, c) => sum + c.length, 0);
 }
 
+// Fraction of the byte budget a trim falls back to. Trimming to exactly the budget leaves the
+// running total sitting on the limit, so the very next chunk re-arms the trim — a full
+// budget-sized Buffer.concat on every chunk of output. Falling back to a low-water mark
+// amortizes that concat over ~10% of the budget in new output, costing that much scrollback.
+export const BUFFER_LOW_WATER = 0.9;
+
+// Append `chunk` to a scrollback buffer and enforce its byte budget in one step, returning
+// `[chunks, totalBytes]` for the caller to store. `total` is the running count the caller
+// already holds: carrying it here removes the O(chunks) re-walk that the old inline reduce did
+// on every chunk, and routing every append through one function is what keeps the count from
+// drifting away from the array it describes.
+export function appendChunk(chunks, total, chunk, high, low = Math.floor(high * BUFFER_LOW_WATER)) {
+  if (!chunk?.length) return [chunks, total];
+  chunks.push(chunk);
+  const next = total + chunk.length;
+  if (next <= high) return [chunks, next];
+  // A low-water mark at or above the budget would re-arm the trim on every chunk.
+  const target = low < high ? low : Math.floor(high / 2);
+  const trimmed = takeBufferTail(chunks, target);
+  return [[trimmed], trimmed.length];
+}
+
 // Take up to maxLen bytes from the END of the buffer. The leading byte cut may land mid-ANSI or
 // mid-UTF8 → skip forward to the next ESC (bounded ≤512B) so the tail starts on a clean sequence.
 export function takeBufferTail(chunks, maxLen) {

@@ -39,9 +39,13 @@ export function buildWebStatic() {
       fs.rmSync(OUT_DIR, { recursive: true, force: true });
     }
 
-    execSync("STATIC_EXPORT=1 npx next build --webpack", {
+    // No `VAR=value` prefix here: cmd.exe has no such syntax, so on Windows the prefix was
+    // parsed as a command name and the build died before Next ever started. The variable
+    // already goes through `env`, which is the portable way.
+    execSync("npx next build --webpack", {
       cwd: WEB_DIR,
       stdio: "inherit",
+      shell: process.platform === "win32" ? "cmd.exe" : "/bin/sh",
       env: {
         ...process.env,
         STATIC_EXPORT: "1",
